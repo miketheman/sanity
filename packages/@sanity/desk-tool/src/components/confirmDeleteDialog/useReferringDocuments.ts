@@ -1,6 +1,7 @@
+import {useMemo} from 'react'
 import documentStore from 'part:@sanity/base/datastore/document'
 import client from 'part:@sanity/base/client'
-import {ClientError} from '@sanity/client'
+import type {ClientError} from '@sanity/client'
 import {createHookFromObservableFactory, getPublishedId} from '@sanity/base/_internal'
 import {Observable, timer, fromEvent, EMPTY, from, of} from 'rxjs'
 import {
@@ -16,12 +17,15 @@ import {
 } from 'rxjs/operators'
 
 const TOKEN_DOCUMENT_ID_BASE = `secrets.sanity.sharedContent`
+const POLL_INTERVAL = 5000
 
 function isNonNullable<T>(value: T): value is NonNullable<T> {
   return value !== null
 }
 
-// this is used in place of `instanceof` so the matching can be more robust
+// this is used in place of `instanceof` so the matching can be more robust and
+// won't have any issues with dual packages etc
+// https://nodejs.org/api/packages.html#dual-package-hazard
 function isClientError(e: unknown): e is ClientError {
   if (typeof e !== 'object') return false
   if (!e) return false
@@ -36,7 +40,7 @@ function getProjectIdFromTokenDocumentId(id: string): null | string {
   if (!id.startsWith(TOKEN_DOCUMENT_ID_BASE)) {
     return null
   }
-  //prettier-ignore
+  // prettier-ignore
   const [/*secrets*/, /*sanity*/, /*sharedContent*/, projectId] = id.split('.')
   return projectId
 }
@@ -60,8 +64,6 @@ function fetchCrossDatasetTokens(): Observable<
     )
 }
 
-const POLL_INTERVAL = 5000
-
 // only fetches when the document is visible
 const visiblePoll$ = fromEvent(document, 'visibilitychange').pipe(
   // add empty emission to have this fire on creation
@@ -80,13 +82,34 @@ const visiblePoll$ = fromEvent(document, 'visibilitychange').pipe(
 export type ReferringDocuments = {
   isLoading: boolean
   totalCount: number
+  projectIds: string[]
   internalReferences?: {
     totalCount: number
     references: Array<{_id: string; _type: string}>
   }
   crossDatasetReferences?: {
     totalCount: number
-    references: Array<{documentId: string; projectId: string; datasetName: string}>
+    references: Array<{
+      /**
+       * The project ID of the document that is currently referencing the subject
+       * document. Unlike `documentId` and `datasetName`, this should always be
+       * defined.
+       */
+      projectId: string
+      /**
+       * The ID of the document that is currently referencing the subject
+       * document. This will be omitted if there is no access to the current
+       * project and dataset pair (e.g. if no `sanity-project-token` were
+       * configured)
+       */
+      documentId?: string
+      /**
+       * The dataset name that is currently referencing the subject document.
+       * This will be omitted if there is no access to the current project and
+       * dataset pair (e.g. if no `sanity-project-token` were configured)
+       */
+      datasetName?: string
+    }>
   }
 }
 
@@ -151,8 +174,19 @@ export function useReferringDocuments(documentId: string): ReferringDocuments {
     publishedId
   )
 
+  const projectIds = useMemo(() => {
+    return Array.from(
+      new Set(
+        crossDatasetReferences?.references
+          .map((crossDatasetReference) => crossDatasetReference.projectId)
+          .filter(Boolean)
+      )
+    ).sort()
+  }, [crossDatasetReferences?.references])
+
   return {
     totalCount: (internalReferences?.totalCount || 0) + (crossDatasetReferences?.totalCount || 0),
+    projectIds,
     internalReferences,
     crossDatasetReferences,
     isLoading: isInternalReferencesLoading || isCrossDatasetReferencesLoading,
